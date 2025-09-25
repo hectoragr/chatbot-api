@@ -3,11 +3,11 @@
   "outputDirectory": "dist",
   "builds": [
     { 
-      "src": "./api/index.ts",
+      "src": "index.ts",
       "use": "@vercel/node"
     }
   ],
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index" }
+    { "source": "/(.*)", "destination": "/index" }
   ]
 }

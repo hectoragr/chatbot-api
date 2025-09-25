@@ -9,7 +9,16 @@
     "resolveJsonModule": true,
     "outDir": "dist",
     "typeRoots": ["./node_modules/@types", "./src/types"],
-    "types": ["node"]
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
   },
-  "include": ["*.ts", "api", "src", "scripts"]
+  "ts-node": {
+    "esm": true,
+    "experimentalSpecifiers": true
+  },
+  "include": ["*.ts", "api/**/*.ts", "src/**/*.ts", "scripts/**/*.ts"]
 }
