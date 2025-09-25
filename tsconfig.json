@@ -11,5 +11,5 @@
     "typeRoots": ["./node_modules/@types", "./src/types"],
     "types": ["node"]
   },
-  "include": ["api", "src", "scripts"]
+  "include": ["*.ts", "api", "src", "scripts"]
 }

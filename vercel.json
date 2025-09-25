@@ -1,5 +1,13 @@
 {
+  "buildCommand": "yarn build",
+  "outputDirectory": "dist",
+  "builds": [
+    { 
+      "src": "./api/index.ts",
+      "use": "@vercel/node"
+    }
+  ],
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index.ts" }
+    { "source": "/(.*)", "destination": "/api/index" }
   ]
 }
