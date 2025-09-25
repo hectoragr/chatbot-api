@@ -3,10 +3,7 @@
   "builds": [
     {
       "src": "api/index.ts",
-      "use": "@vercel/node",
-      "config": {
-        "runtime": "nodejs22.x"
-      }
+      "use": "@vercel/node"
     }
   ],
   "routes": [
