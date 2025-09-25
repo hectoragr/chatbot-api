@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "functions": {
+    "api/*.ts": { "runtime": "nodejs22.x" }
+  },
+  "routes": [
+    { "src": "/health", "dest": "/api/index.ts" },
+    { "src": "/conversations", "dest": "/api/index.ts" },
+    { "src": "/completions", "dest": "/api/index.ts" },
+    { "src": "/delete", "dest": "/api/index.ts" },
+    { "src": "/admin/(.*)", "dest": "/api/index.ts" }
+  ]
+}

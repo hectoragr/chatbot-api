@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "allowJs": true,
+    "outDir": "dist",
+    "noImplicitAny": false
+  },
+  "ts-node": {
+    "esm": true
+  }
+}
