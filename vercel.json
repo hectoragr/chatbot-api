@@ -7,9 +7,6 @@
       "use": "@vercel/node"
     }
   ],
-  "functions": {
-    "api/*.ts": { "maxDuration": 30 }
-  },
   "rewrites": [
     { "source": "/(.*)", "destination": "/index" }
   ]
