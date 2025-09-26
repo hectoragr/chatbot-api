@@ -32,8 +32,21 @@ import { ensureConversation, getConversation, getLatestConversationByTokenUser, 
 import { runCompletion } from "../src/lib/providers.js";
 import { PutCommand, ScanCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 
-export const config = { runtime: "nodejs20.x" };
 const app = express();
+
+// Create handler for Vercel deployment
+export const createHandler = () => {
+  return async (req: VercelRequest, res: VercelResponse): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      app(req as any, res as any, (err?: any) => {
+        if (err) {
+          return reject(err);
+        }
+        resolve(undefined);
+      });
+    });
+  };
+};
 app.use(cors({
   origin: [
     'http://localhost:5173',
@@ -498,5 +511,17 @@ if (process.env.NODE_ENV === 'development') {
   });
 }
 
-// Export an Express-compatible handler. Do NOT call app.listen on Vercel.
-export default (req: any, res: any) => app(req, res);
+// Create a handler function that works with both Express and Vercel
+const handler = async (req: VercelRequest, res: VercelResponse) => {
+  return new Promise((resolve, reject) => {
+    app(req as any, res as any, (err?: any) => {
+      if (err) {
+        return reject(err);
+      }
+      resolve(undefined);
+    });
+  });
+};
+
+// Export the handler for Vercel
+export default handler;
