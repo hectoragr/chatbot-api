@@ -49,7 +49,8 @@ app.use(express.json());
 const requireJWT = jwtCheck({
   audience: process.env.AUTH0_AUDIENCE,
   issuerBaseURL: process.env.AUTH0_ISSUER_BASE_URL,
-  tokenSigningAlg: 'RS256'
+  tokenSigningAlg: 'RS256',
+  jwksUri: `${process.env.AUTH0_ISSUER_BASE_URL}/.well-known/jwks.json`
 });
 
 // Disable caching for all routes in development
