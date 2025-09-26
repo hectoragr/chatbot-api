@@ -498,7 +498,5 @@ if (process.env.NODE_ENV === 'development') {
   });
 }
 
-// Export handler for Vercel
-export default function handler(req: VercelRequest, res: VercelResponse) {
-  return (app as any)(req, res);
-}
+// Export an Express-compatible handler. Do NOT call app.listen on Vercel.
+export default (req: any, res: any) => app(req, res);
