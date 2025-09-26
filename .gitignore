@@ -15,3 +15,4 @@ yarn-error.log*
 .pnp.*
 .pnp.js
 *.local
+scripts/setup-production-ddb.sh

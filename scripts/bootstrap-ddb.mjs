@@ -4,7 +4,28 @@ const REGION = process.env.AWS_REGION || "us-east-1";
 const ENDPOINT = process.env.DDB_ENDPOINT; // used when LOCAL_DDB=true
 const LOCAL = process.env.LOCAL_DDB === "true";
 
-const client = new DynamoDBClient({ region: REGION, ...(LOCAL && ENDPOINT ? { endpoint: ENDPOINT, credentials: { accessKeyId: "local", secretAccessKey: "local" } } : {}) });
+const clientConfig = {
+  region: REGION
+};
+
+if (LOCAL && ENDPOINT) {
+  // Local development configuration
+  clientConfig.endpoint = ENDPOINT;
+  clientConfig.credentials = {
+    accessKeyId: "local",
+    secretAccessKey: "local"
+  };
+} else {
+  // Production configuration
+  if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+    clientConfig.credentials = {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+    };
+  }
+}
+
+const client = new DynamoDBClient(clientConfig);
 
 const Tables = {
   Tokens: process.env.DDB_TOKENS || "Tokens",

@@ -50,7 +50,7 @@ export const createHandler = () => {
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://hectoragomez.com',
+    'https://chat.hectoragomez.com',
   ],
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization'],
