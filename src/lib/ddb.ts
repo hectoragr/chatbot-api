@@ -18,12 +18,14 @@ export const TABLES = {
   Tokens: process.env.DDB_TOKENS || "Tokens",
   Users: process.env.DDB_USERS || "Users",
   Conversations: process.env.DDB_CONVERSATIONS || "Conversations",
+  RateLimits: process.env.DDB_RATELIMITS || "RateLimits",
+  TokenRequests: process.env.DDB_TOKENS_REQUEST || "TokenRequests"
 };
 
 export type TokenDoc = {
   token: string;
   user_id: string;
-  provider: "openai" | "deepseek";
+  provider: "OPENAI" | "DEEPSEEK" | "ANY";
   model?: string;
   limit: number;
   used: number;
@@ -59,3 +61,22 @@ export type ConversationDoc = {
   provider: "OPENAI" | "DEEPSEEK" | "ANY";
   messages: Message[];
 };
+
+// Optional: type for RateLimits table (handy for debugging)
+export type RateLimitDoc = {
+  key: string;      // "email:alice@example.com|/completions|28934736"
+  count: number;    // incremented per request in window
+  ttl: number;      // epoch seconds; DynamoDB TTL enabled on this attribute
+};
+
+export type TokenRequestDoc = {
+  token: string;
+  user_id: string;
+  name: string;
+  processed: boolean;
+  createdAt: string;
+  updatedAt: string;
+  provider: "OPENAI" | "DEEPSEEK" | "ANY";
+  limit: number;
+  company?: string;
+}

@@ -29,8 +29,9 @@ const client = new DynamoDBClient(clientConfig);
 
 const Tables = {
   Tokens: process.env.DDB_TOKENS || "Tokens",
-  Users: process.env.DDB_USERS || "Users",
+  Users: process.env.DDB_USERS || "Users", 
   Conversations: process.env.DDB_CONVERSATIONS || "Conversations",
+  TokenRequests: process.env.DDB_TOKEN_REQUESTS || "TokenRequests"
 };
 
 async function ensureTable(params) {
@@ -45,11 +46,104 @@ async function ensureTable(params) {
 
 async function purgeAll() {
   const existing = await client.send(new ListTablesCommand({}));
-  for (const name of [Tables.Tokens, Tables.Users, Tables.Conversations]) {
+  for (const name of [Tables.Tokens, Tables.Users, Tables.Conversations, Tables.TokenRequests]) {
     if (existing.TableNames?.includes(name)) {
       await client.send(new DeleteTableCommand({ TableName: name }));
       console.log(`🗑️ Deleted: ${name}`);
     }
+  }
+}
+
+async function createTables() {
+  const existing = await client.send(new ListTablesCommand({}));
+
+  // Conversations table with GSIs
+  if (!existing.TableNames?.includes(Tables.Conversations)) {
+    await client.send(new CreateTableCommand({
+      TableName: Tables.Conversations,
+      KeySchema: [
+        { AttributeName: "conversation_id", KeyType: "HASH" }
+      ],
+      AttributeDefinitions: [
+        { AttributeName: "conversation_id", AttributeType: "S" },
+        { AttributeName: "user_id", AttributeType: "S" },
+        { AttributeName: "token_user", AttributeType: "S" },
+        { AttributeName: "createdAt", AttributeType: "S" }
+      ],
+      GlobalSecondaryIndexes: [
+        {
+          IndexName: "byUserCreatedAt",
+          KeySchema: [
+            { AttributeName: "user_id", KeyType: "HASH" },
+            { AttributeName: "createdAt", KeyType: "RANGE" }
+          ],
+          Projection: { ProjectionType: "ALL" }
+        },
+        {
+          IndexName: "byTokenUserCreatedAt",
+          KeySchema: [
+            { AttributeName: "token_user", KeyType: "HASH" },
+            { AttributeName: "createdAt", KeyType: "RANGE" }
+          ],
+          Projection: { ProjectionType: "ALL" }
+        }
+      ],
+      BillingMode: "PAY_PER_REQUEST"
+    }));
+    console.log(`➕ Created: ${Tables.Conversations}`);
+  } else {
+    console.log(`✅ Table exists: ${Tables.Conversations}`);
+  }
+
+  // Tokens table
+  if (!existing.TableNames?.includes(Tables.Tokens)) {
+    await client.send(new CreateTableCommand({
+      TableName: Tables.Tokens,
+      KeySchema: [
+        { AttributeName: "token", KeyType: "HASH" }
+      ],
+      AttributeDefinitions: [
+        { AttributeName: "token", AttributeType: "S" }
+      ],
+      BillingMode: "PAY_PER_REQUEST"
+    }));
+    console.log(`➕ Created: ${Tables.Tokens}`);
+  } else {
+    console.log(`✅ Table exists: ${Tables.Tokens}`);
+  }
+
+  // Users table
+  if (!existing.TableNames?.includes(Tables.Users)) {
+    await client.send(new CreateTableCommand({
+      TableName: Tables.Users,
+      KeySchema: [
+        { AttributeName: "user_id", KeyType: "HASH" }
+      ],
+      AttributeDefinitions: [
+        { AttributeName: "user_id", AttributeType: "S" }
+      ],
+      BillingMode: "PAY_PER_REQUEST"
+    }));
+    console.log(`➕ Created: ${Tables.Users}`);
+  } else {
+    console.log(`✅ Table exists: ${Tables.Users}`);
+  }
+
+  // TokenRequests table
+  if (!existing.TableNames?.includes(Tables.TokenRequests)) {
+    await client.send(new CreateTableCommand({
+      TableName: Tables.TokenRequests,
+      KeySchema: [
+        { AttributeName: "token", KeyType: "HASH" }
+      ],
+      AttributeDefinitions: [
+        { AttributeName: "token", AttributeType: "S" }
+      ],
+      BillingMode: "PAY_PER_REQUEST"
+    }));
+    console.log(`➕ Created: ${Tables.TokenRequests}`);
+  } else {
+    console.log(`✅ Table exists: ${Tables.TokenRequests}`);
   }
 }
 
@@ -60,43 +154,7 @@ async function main() {
     await purgeAll();
   }
 
-  await ensureTable({
-    TableName: Tables.Tokens,
-    AttributeDefinitions: [{ AttributeName: "token", AttributeType: "S" }, { AttributeName: "user_id", AttributeType: "S" }],
-    KeySchema: [{ AttributeName: "token", KeyType: "HASH" }],
-    BillingMode: "PAY_PER_REQUEST",
-    GlobalSecondaryIndexes: [{
-      IndexName: "byUser",
-      KeySchema: [{ AttributeName: "user_id", KeyType: "HASH" }],
-      Projection: { ProjectionType: "ALL" }
-    }]
-  });
-
-  await ensureTable({
-    TableName: Tables.Users,
-    AttributeDefinitions: [{ AttributeName: "user_id", AttributeType: "S" }],
-    KeySchema: [{ AttributeName: "user_id", KeyType: "HASH" }],
-    BillingMode: "PAY_PER_REQUEST"
-  });
-
-  await ensureTable({
-    TableName: Tables.Conversations,
-    AttributeDefinitions: [
-      { AttributeName: "conversation_id", AttributeType: "S" },
-      { AttributeName: "token_user", AttributeType: "S" },
-      { AttributeName: "createdAt", AttributeType: "S" }
-    ],
-    KeySchema: [{ AttributeName: "conversation_id", KeyType: "HASH" }],
-    BillingMode: "PAY_PER_REQUEST",
-    GlobalSecondaryIndexes: [{
-      IndexName: "byTokenUserCreatedAt",
-      KeySchema: [
-        { AttributeName: "token_user", KeyType: "HASH" },
-        { AttributeName: "createdAt", KeyType: "RANGE" }
-      ],
-      Projection: { ProjectionType: "ALL" }
-    }]
-  });
+  await createTables();
 
   console.log("✅ Bootstrap complete");
 }

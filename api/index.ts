@@ -1,8 +1,24 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import express, { Request as ExpressRequest, NextFunction, Response } from "express";
 import { auth as jwtCheck } from 'express-oauth2-jwt-bearer';
+import * as dotenv from 'dotenv';
+import helmet from "helmet";
+import { Message } from "../src/lib/ddb.js";
+import { loadActiveToken, incrementTokenUsed, createTokenIfNotExists, TokenDocReq, listTokens, listUnprocessedTokensRequest, deleteToken, updateToken, createTokenRequest, createTokenRequestMaxThreeTokens, transformTokenRequestToToken } from "../src/lib/tokens.js";
+import { listPrompts } from "../src/lib/prompts.js";
+import { ensureConversation, getConversation, getLatestConversationByTokenUser, getConversationsByTokenUser, appendMessages, deleteByTokenAndUser, runSmallModelForSummary, renameConversation, listConversations, deleteConversation, getConversationsByUserAndToken } from "../src/lib/conversations.js";
+import { runCompletion } from "../src/lib/providers.js";
+import { rateLimit, generateCSRFToken, verifyCSRFToken, hmac , randNonce, safeCompare, CSRF_TTL_MS, generateToken} from "../src/utils/utils.js";
+import { createUserIfNotExists, deleteUserById, getUserById, listUsers, updateUser } from "../src/lib/users.js";
+import { transform } from "zod";
 
-type Request = ExpressRequest & {
+dotenv.config();
+const app = express();
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+}))
+
+export type Request = ExpressRequest & {
   query: any;
   body: any;
   params: any;
@@ -20,19 +36,6 @@ type Request = ExpressRequest & {
     };
   };
 };
-import cors from 'cors';
-import * as dotenv from 'dotenv';
-dotenv.config();
-
-import { requireAdmin, authRouter, requireAuth, getUserProfile } from "../src/lib/auth.js";
-import { ddb, TABLES, Message } from "../src/lib/ddb.js";
-import { loadActiveToken, incrementTokenUsed } from "../src/lib/tokens.js";
-import { listPrompts } from "../src/lib/prompts.js";
-import { ensureConversation, getConversation, getLatestConversationByTokenUser, getConversationsByTokenUser, appendMessages, deleteByTokenAndUser, runSmallModelForSummary, renameConversation } from "../src/lib/conversations.js";
-import { runCompletion } from "../src/lib/providers.js";
-import { PutCommand, ScanCommand, DeleteCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
-
-const app = express();
 
 // Create handler for Vercel deployment
 export const createHandler = () => {
@@ -47,15 +50,24 @@ export const createHandler = () => {
     });
   };
 };
-app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'https://chat.hectoragomez.com',
-  ],
-  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization'],
-  maxAge: 86400,
-}));
+const ALLOWED_ORIGINS = new Set([
+  'http://localhost:5173',
+  'https://chat.hectoragomez.com',
+]);
+app.use((req, res, next) => {
+  const origin = req.headers.origin as string | undefined;
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader('Vary', 'Origin');
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CSRF-Token');
+    res.setHeader('Access-Control-Max-Age', '86400'); // 24 hours
+  }
+  if (req.method === 'OPTIONS') {
+    return res.status(204).end();
+  }
+  next();
+});
 app.use(express.json());
 
 
@@ -78,6 +90,16 @@ if (process.env.NODE_ENV === 'development') {
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+app.get("/csrf", rateLimit(60, 30), async (req: Request, res: Response) => {
+  try {
+    const origin = Array.isArray(req.headers.origin) ? req.headers.origin[0] : req.headers.origin;
+    const resp = generateCSRFToken(origin || "");
+    res.json(resp);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "internal_error" });
+  }
+});
+
 // GET /prompts - List available system prompts
 app.get("/prompts", async (_req, res) => {
   try {
@@ -88,9 +110,68 @@ app.get("/prompts", async (_req, res) => {
   }
 });
 
+app.get('/generateCaptcha', rateLimit(60, 30), async (_req, res) => {
+  try {
+    const a = Math.floor(Math.random() * 5) + 2;
+    const b = Math.floor(Math.random() * 5) + 3;
+    const captcha = { question: `What is ${a} + ${b}?`, answer: (a + b).toString() };
+    const ts = new Date().toISOString();
+    const nonce = randNonce();
+
+    const answerHash = hmac(captcha.answer + ts + nonce);
+    const payload = { answerHash, ts, nonce };
+    const sig = hmac(JSON.stringify(payload));
+    const token = Buffer.from(JSON.stringify({ ...payload, sig })).toString('base64url');
+
+    res.json({ question: captcha.question, token, expiresIn: 2 * 60 * 1000 }); // valid for 2 minutes
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "internal_error" });
+  }
+});
+
+app.post('/requestToken', rateLimit(60, 10), async (req, res) => {
+  try {
+    const { email, name, provider, tokenLimit, company, captchaAnswer, captchaToken } = req.body || {};
+    if (!email || !name || !provider || !tokenLimit || !company || !captchaAnswer || !captchaToken) {
+      return res.status(400).json({ error: 'email, name, provider, tokenLimit, company, captchaAnswer, and captchaToken are required' });
+    }
+
+    // Validate captcha
+    let decoded: { answerHash: string; ts: string; nonce: string; sig: string } ;
+    try {
+      const decodedStr = Buffer.from(captchaToken, 'base64url').toString('utf-8');
+      decoded = JSON.parse(decodedStr);
+    } catch (e){
+      console.log(e);
+      return res.status(400).json({ error: 'Invalid captcha token' });
+    }
+
+    const { answerHash, ts, nonce, sig } = decoded;
+    if (!answerHash || !ts || !nonce || !sig) {
+      return res.status(400).json({ error: 'Invalid captcha token structure' });
+    }
+
+    // Check signature
+    const expectedSig = hmac(JSON.stringify({ answerHash, ts, nonce }));
+    const expectedAnswerHash = hmac(captchaAnswer + ts + nonce);
+    if (!safeCompare(expectedSig, sig) || !safeCompare(expectedAnswerHash, answerHash)) {
+      return res.status(400).json({ error: 'Invalid captcha token signature' });
+    }
+    const tsDate = new Date(ts);
+    if (isNaN(tsDate.getTime()) || (Date.now() - tsDate.getTime()) > CSRF_TTL_MS) {
+      return res.status(400).json({ error: 'Captcha token has expired' });
+    }
+    const tokenRequest = await createTokenRequestMaxThreeTokens(email, name, provider, tokenLimit, company);
+    return res.json({ token: tokenRequest.token, message: `Token generated for ${email}. Use this token to start chatting.` });
+  } catch (e) {
+    console.log(e);
+    return res.status(400).json({ error: 'Invalid captcha token' });
+  }
+  return res.status(500).json({ error: "internal_error" });
+}); 
 
 // GET /isTokenValid?token=TOKEN&email=EMAIL
-app.get("/isTokenValid", async (req: Request, res: Response) => {
+app.get("/isTokenValid", rateLimit(60, 30), async (req: Request, res: Response) => {
   try {
     const tokenStr = String(req.query.token || "").trim();
     if (!tokenStr) return res.status(400).json({ error: "token is required" });
@@ -102,15 +183,7 @@ app.get("/isTokenValid", async (req: Request, res: Response) => {
     const email = tokenDoc.user_id;
 
     // Get user details
-    const userResponse = await ddb().send(new ScanCommand({ 
-      TableName: TABLES.Users,
-      FilterExpression: "user_id = :uid",
-      ExpressionAttributeValues: {
-        ":uid": email
-      }
-    }));
-
-    const user = userResponse.Items?.[0];
+    const user = await getUserById(email);
     const name = user?.name || email;
 
     res.json({ 
@@ -128,13 +201,14 @@ app.get("/isTokenValid", async (req: Request, res: Response) => {
 });
 
 // GET /conversations?token=TOKEN[&conversation_id=ID][&user_id=UID][&all=true]
-app.get("/conversations", async (req: Request, res: Response) => {
+app.get("/conversations", rateLimit(60, 30), async (req: Request, res: Response) => {
   try {
     const tokenStr = String(req.query.token || "").trim();
     if (!tokenStr) return res.status(400).json({ error: "token is required" });
     await loadActiveToken(tokenStr);
     const conversation_id = req.query.conversation_id ? String(req.query.conversation_id) : undefined;
     const user_id = req.query.email ? String(req.query.email) : undefined;
+    if (!user_id) return res.status(400).json({ error: "email is required" });
     const all = req.query.all === 'true';
 
     if (conversation_id) {
@@ -144,7 +218,7 @@ app.get("/conversations", async (req: Request, res: Response) => {
     }
 
     if (all) {
-      const conversations = await getConversationsByTokenUser(tokenStr, user_id);
+      const conversations = await getConversationsByUserAndToken(user_id, tokenStr);
       return res.json({ valid: true, conversations });
     } else {
       const convo = await getLatestConversationByTokenUser(tokenStr, user_id);
@@ -158,21 +232,17 @@ app.get("/conversations", async (req: Request, res: Response) => {
 });
 
 // POST /completions { token, message, conversation_id?, user_id, promptId? }
-app.post("/completions", async (req: Request, res: Response) => {
+app.post("/completions", rateLimit(60, 30), verifyCSRFToken, async (req: Request, res: Response) => {
   try {
     const { token: tokenStr, message, conversationId, email, promptId, provider } = req.body || {};
     if (!tokenStr || !message || !email) return res.status(400).json({ error: "token, message, email are required" });
 
+    const user = await getUserById(email);
+    if (!user) {
+      return res.status(404).json({ error: "user not found" });
+    }
     const tokenDoc = await loadActiveToken(tokenStr);
-
-    // ensure user (idempotent put)
     const nowIso = new Date().toISOString();
-    await ddb().send(new PutCommand({
-      TableName: TABLES.Users,
-      Item: { email, createdAt: nowIso, updatedAt: nowIso },
-      ConditionExpression: "attribute_not_exists(user_id)"
-    })).catch(() => undefined);
-
     let convo = await ensureConversation(conversationId, tokenStr, email, provider);
 
     const remaining = (tokenDoc.limit ?? 0) - (tokenDoc.used ?? 0);
@@ -204,7 +274,7 @@ app.post("/completions", async (req: Request, res: Response) => {
 });
 
 // PUT /delete?token=TOKEN&conversationId=ID { email }
-app.put("/delete", async (req: Request, res: Response) => {
+app.put("/delete", rateLimit(60, 30), verifyCSRFToken,async (req: Request, res: Response) => {
   try {
     const tokenStr = String(req.query.token || "").trim();
     const conversationId = String(req.query.conversationId || "").trim();
@@ -229,11 +299,7 @@ app.put("/delete", async (req: Request, res: Response) => {
         return res.status(403).json({ error: "unauthorized to delete this conversation" });
       }
 
-      await ddb().send(new DeleteCommand({ 
-        TableName: TABLES.Conversations, 
-        Key: { conversation_id: conversationId } 
-      }));
-      
+      await deleteConversation(conversationId);
       return res.json({ valid: true, conversationId });
     } else {
       // Delete all conversations for this token and user
@@ -279,7 +345,7 @@ async function getUserInfo(token: string) {
   return userInfo;
 }
 
-app.use('/admin', requireJWT, async (req: Request, res: Response, next: NextFunction) => {
+app.use('/admin', requireJWT, rateLimit(60, 30), verifyCSRFToken, async (req: Request, res: Response, next: NextFunction) => {
   const token = req.headers?.authorization?.replace('Bearer ', '');
   if (!token) {
     return res.status(401).json({ error: 'No authorization token' });
@@ -317,25 +383,24 @@ app.get('/admin/profile', async (req: Request, res: Response) => {
 
 // Admin endpoints
 app.get("/admin/tables", async (_req: Request, res: Response) => {
-  const [tokens, users, conversations] = await Promise.all([
-    ddb().send(new ScanCommand({ TableName: TABLES.Tokens, Limit: 100 })).then(r => r.Items || []),
-    ddb().send(new ScanCommand({ TableName: TABLES.Users, Limit: 100 })).then(r => r.Items || []),
-    ddb().send(new ScanCommand({ TableName: TABLES.Conversations, Limit: 100 })).then(r => r.Items || []),
+  const [tokens, users, conversations, unprocessedTokens] = await Promise.all([
+    listTokens(),
+    listUsers(),
+    listConversations(),
+    listUnprocessedTokensRequest()
   ]);
-  res.json({ tokens, users, conversations });
+  res.json({ tokens, users, conversations, unprocessedTokens });
 });
 
 app.post("/admin/users", async (req: Request, res: Response) => {
   const { email, name, company } = req.body || {};
   if (!email) return res.status(400).json({ error: "email required" });
   const now = new Date().toISOString();
-  const doc = { user_id: email, email, name, company, createdAt: now, updatedAt: now };
-  await ddb().send(new PutCommand({ 
-    TableName: TABLES.Users, 
-    Item: doc, 
-    ConditionExpression: "attribute_not_exists(user_id)"
-  }));
-  res.status(201).json(doc);
+  const created = await createUserIfNotExists(email, name, email, company);
+  if (!created) {
+    return res.status(409).json({ error: "User already exists" });
+  }
+  res.status(201).json({ user_id: email, email, name, company, createdAt: now, updatedAt: now });
 });
 
 app.put("/admin/users/:email", async (req: Request, res: Response) => {
@@ -343,52 +408,13 @@ app.put("/admin/users/:email", async (req: Request, res: Response) => {
     const email = req.params.email;
     const { name, company, email: emailBody } = req.body || {};
     if (!email) return res.status(400).json({ error: "email required" });
+
+    const updated = await updateUser(email, name, emailBody, company);
+    if (!updated) {
+      return res.status(404).json({ error: "User not found" });
+    }
     
-    // Build update expression and attribute values dynamically
-    const updateParts = [];
-    const expressionAttributeNames: Record<string, string> = {
-      "#ua": "updatedAt"
-    };
-    const expressionAttributeValues: Record<string, any> = {
-      ":now": new Date().toISOString()
-    };
-
-    if (typeof name === 'string') {
-      updateParts.push("#n = :name");
-      expressionAttributeNames["#n"] = "name";
-      expressionAttributeValues[":name"] = name;
-    }
-
-    if (typeof company === 'string') {
-      updateParts.push("#c = :company");
-      expressionAttributeNames["#c"] = "company";
-      expressionAttributeValues[":company"] = company;
-    }
-    if (typeof emailBody === 'string') {
-      updateParts.push("#e = :email");
-      expressionAttributeNames["#e"] = "email";
-      expressionAttributeValues[":email"] = emailBody;
-    }
-
-    // Always update updatedAt
-    updateParts.push("#ua = :now");
-
-    if (updateParts.length === 1) {
-      return res.status(400).json({ error: "At least one field to update is required" });
-    }
-
-    const updateExpression = `SET ${updateParts.join(", ")}`;
-
-    const result = await ddb().send(new UpdateCommand({
-      TableName: TABLES.Users,
-      Key: { user_id: email },
-      UpdateExpression: updateExpression,
-      ExpressionAttributeNames: expressionAttributeNames,
-      ExpressionAttributeValues: expressionAttributeValues,
-      ReturnValues: "ALL_NEW"
-    }));
-
-    res.json(result.Attributes);
+    res.json(updated);
   } catch (e: any) {
     const code = e?.name === "ConditionalCheckFailedException" ? 404 : 500;
     res.status(code).json({ error: e?.message || "internal_error" });
@@ -397,100 +423,29 @@ app.put("/admin/users/:email", async (req: Request, res: Response) => {
 
 app.delete("/admin/users/:email", async (req: Request, res: Response) => {
   const email = req.params.email;
-  await ddb().send(new DeleteCommand({ TableName: TABLES.Users, Key: { user_id: email } }));
+  const deleted = await deleteUserById(email);
+  if (!deleted) {
+    return res.status(404).json({ error: "User not found" });
+  }
   res.json({ deleted: 1 });
 });
 
-import crypto from 'crypto';
-
-function generateToken(user_id: string): string {
-  // Generate 16 random bytes
-  const randomBytes = crypto.randomBytes(16);
-  
-  // Create a timestamp component
-  const timestamp = Date.now().toString(36);
-  
-  // Create a hash of the user_id
-  const hash = crypto.createHash('sha256')
-    .update(user_id + timestamp + randomBytes.toString('hex'))
-    .digest('base64')
-    // Make it URL safe
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=/g, '');
-  
-  // Take first 32 characters to keep it reasonable length
-  return hash.slice(0, 32);
-}
-
 app.post("/admin/tokens", async (req: Request, res: Response) => {
-  const { user_id, provider, model, limit, isActive = true, expiresAt } = req.body || {};
+  const { user_id, provider, model, limit, isActive = true } = req.body || {};
   if (!user_id || !provider || isNaN(limit)) return res.status(400).json({ error: "user_id, provider, limit required" });
-  const token = generateToken(user_id);
-  const now = new Date().toISOString();
-  const doc = { token, user_id, provider, model, limit, used: 0, isActive, expiresAt, createdAt: now, updatedAt: now };
-  await ddb().send(new PutCommand({ 
-    TableName: TABLES.Tokens, 
-    Item: doc, 
-    ConditionExpression: "attribute_not_exists(#tk)",
-    ExpressionAttributeNames: {
-      "#tk": "token"
-    }
-  }));
+  const doc = await createTokenIfNotExists({ user_id, provider, model, limit, isActive, used: 0 } as TokenDocReq);
+  console.log('Created token:', doc);
+  if (!doc) return res.status(409).json({ error: "Token already exists" });
   res.status(201).json(doc);
 });
 
 app.put("/admin/tokens/:token", async (req: Request, res: Response) => {
   try {
     const tokenStr = req.params.token;
-    const { limit, isActive, provider } = req.body || {};
-    
-    // Build update expression and attribute values dynamically
-    const updateParts = [];
-    const expressionAttributeNames: Record<string, string> = {
-      "#ua": "updatedAt"
-    };
-    const expressionAttributeValues: Record<string, any> = {
-      ":now": new Date().toISOString()
-    };
-
-    if (!isNaN(limit)) {
-      updateParts.push("#l = :limit");
-      expressionAttributeNames["#l"] = "limit";
-      expressionAttributeValues[":limit"] = limit;
-    }
-
-    if (typeof isActive === 'boolean') {
-      updateParts.push("#ia = :isActive");
-      expressionAttributeNames["#ia"] = "isActive";
-      expressionAttributeValues[":isActive"] = isActive;
-    }
-
-    if (typeof provider === 'string') {
-      updateParts.push("#p = :provider");
-      expressionAttributeNames["#p"] = "provider";
-      expressionAttributeValues[":provider"] = provider;
-    }
-
-    // Always update updatedAt
-    updateParts.push("#ua = :now");
-
-    if (updateParts.length === 1) {
-      return res.status(400).json({ error: "At least one field to update is required" });
-    }
-
-    const updateExpression = `SET ${updateParts.join(", ")}`;
-
-    const result = await ddb().send(new UpdateCommand({
-      TableName: TABLES.Tokens,
-      Key: { token: tokenStr },
-      UpdateExpression: updateExpression,
-      ExpressionAttributeNames: expressionAttributeNames,
-      ExpressionAttributeValues: expressionAttributeValues,
-      ReturnValues: "ALL_NEW"
-    }));
-
-    res.json(result.Attributes);
+    const { limit, isActive, provider } = req.body || {};    
+    await updateToken(tokenStr, { limit, isActive, provider } as Partial<TokenDocReq>);
+    const updated = await loadActiveToken(tokenStr);
+    res.json(updated);
   } catch (e: any) {
     const code = e?.name === "ConditionalCheckFailedException" ? 404 : 500;
     res.status(code).json({ error: e?.message || "internal_error" });
@@ -499,8 +454,22 @@ app.put("/admin/tokens/:token", async (req: Request, res: Response) => {
 
 app.delete("/admin/tokens/:token", async (req: Request, res: Response) => {
   const tokenStr = req.params.token;
-  await ddb().send(new DeleteCommand({ TableName: TABLES.Tokens, Key: { token: tokenStr } }));
+  await deleteToken(tokenStr);
   res.json({ deleted: 1 });
+});
+
+app.put("/admin/approveToken/:tokenRequestId", async (req: Request, res: Response) => {
+  try {
+    const tokenRequestId = req.params.tokenRequestId;
+    if (!tokenRequestId) return res.status(400).json({ error: "tokenRequestId required" });
+    const transform = await transformTokenRequestToToken(tokenRequestId);
+    if (!transform) return res.status(404).json({ error: "token request not found" });
+    res.json(transform);
+  } catch (e: any) {
+    console.log(e);
+    const code = e?.name === "ConditionalCheckFailedException" ? 404 : 500;
+    res.status(code).json({ error: e?.message || "internal_error" });
+  }
 });
 
 // Start server in development mode

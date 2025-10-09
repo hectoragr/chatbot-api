@@ -1,9 +1,28 @@
 import { ddb, TABLES, ConversationDoc, Message } from "./ddb.js";
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand, BatchWriteCommand, DeleteCommand } from "@aws-sdk/lib-dynamodb";
+import { GetCommand, PutCommand, QueryCommand, UpdateCommand, BatchWriteCommand, ScanCommand, DeleteCommand} from "@aws-sdk/lib-dynamodb";
 
 export async function getConversation(conversation_id: string) {
   const out = await ddb().send(new GetCommand({ TableName: TABLES.Conversations, Key: { conversation_id } }));
   return out.Item as ConversationDoc | undefined;
+}
+
+export async function getConversationsByUserAndToken(user_id: string, token: string): Promise<ConversationDoc[]> {
+  if (!user_id || !token) return [];
+  const out = await ddb().send(new QueryCommand({
+    TableName: TABLES.Conversations,
+    IndexName: "byUserCreatedAt",
+    KeyConditionExpression: "user_id = :pk",
+    FilterExpression: "#token = :token",
+    ExpressionAttributeNames: {
+      "#token": "token"
+    },
+    ExpressionAttributeValues: {
+      ":pk": user_id,
+      ":token": token
+    },
+    ScanIndexForward: false // most recent first
+  }));
+  return (out.Items as ConversationDoc[]) || [];
 }
 
 export async function getConversationsByTokenUser(token: string, user_id?: string, page?: number): Promise<ConversationDoc[]> {
@@ -139,4 +158,13 @@ export async function deleteByTokenAndUser(token: string, user_id: string) {
       RequestItems: { [TABLES.Conversations]: chunk.map(it => ({ DeleteRequest: { Key: { conversation_id: it.conversation_id } } })) }
     }));
   }
+}
+
+export async function deleteConversation(conversation_id: string) {
+  await ddb().send(new DeleteCommand({ TableName: TABLES.Conversations, Key: { conversation_id } }));
+} 
+
+export async function listConversations(limit: number = 100): Promise<ConversationDoc[]> {
+  const out = await ddb().send(new ScanCommand({ TableName: TABLES.Conversations, Limit: limit }));
+  return (out.Items as ConversationDoc[]) || [];
 }
