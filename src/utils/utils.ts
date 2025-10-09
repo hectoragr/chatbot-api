@@ -1,12 +1,25 @@
 import crypto from "crypto";
 import { z } from "zod";
 import { loadRateLimit, updateRateLimit } from "../lib/rateLimits.js";
-import type { Request } from "../../api/index.js";
 import type { NextFunction, Response } from "express";
+
+// Use a more complete Request interface
+interface CustomRequest {
+    method: string;
+    headers: {
+        [key: string]: string | string[] | undefined;
+        "x-csrf-token"?: string;
+        "x-xsrf-token"?: string;
+        "x-forwarded-for"?: string;
+    };
+    auth?: {
+        userInfo?: { email?: string };
+        payload?: { email?: string };
+    };
+}
 
 const SEC = process.env.CSRF_SECRET || "change_this_secret";
 export const CSRF_TTL_MS = 2 * 60 * 1000;  // 2 minutes
-
 
 export function hmac(data: string) {
     return crypto.createHmac("sha256", SEC).update(data).digest("hex");
@@ -21,7 +34,7 @@ export function safeCompare(a: string, b: string) {
     return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
-function clientId(req: Request) {
+function clientId(req: CustomRequest) {
     const email = req.auth?.userInfo?.email || req.auth?.payload?.email;
     if (email) return `email:${email}`;
     const ip = req.headers?.["x-forwarded-for"] || "unknown";
@@ -29,7 +42,7 @@ function clientId(req: Request) {
 }
 
 export function rateLimit(windowSec: number, maxRequests: number) {
-    return async (req: Request, res: Response, next: NextFunction) => {
+    return async (req: CustomRequest, res: Response, next: NextFunction) => {
         if (process.env.NODE_ENV === "development") {
             return next();
         }
@@ -39,12 +52,12 @@ export function rateLimit(windowSec: number, maxRequests: number) {
         const rl = await loadRateLimit(key);
 
         if (rl.count >= maxRequests) {
-            return new Response("Rate limit exceeded", { status: 429 });
+            return res.status(429).json({ error: "Rate limit exceeded" });
         }
 
         const count = await updateRateLimit(key, 1, windowSec);
         if (count > maxRequests) {
-            return new Response("Rate limit exceeded", { status: 429 });
+            return res.status(429).json({ error: "Rate limit exceeded" });
         }
         res.setHeader("X-RateLimit-Limit", maxRequests.toString());
         res.setHeader("X-RateLimit-Remaining", Math.max(0, maxRequests - count).toString());
@@ -52,13 +65,16 @@ export function rateLimit(windowSec: number, maxRequests: number) {
     };
 }
 
-export function verifyCSRFToken(req: Request, res: Response, next: NextFunction) {
+export function verifyCSRFToken(req: CustomRequest, res: Response, next: NextFunction) {
     if (process.env.NODE_ENV === "development") {
         return next();
     }
-    if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    
+    const method = req.method.toUpperCase();
+    if (method === "GET" || method === "HEAD" || method === "OPTIONS") {
         return next();
     }
+    
     const token = req.headers["x-csrf-token"] || req.headers["x-xsrf-token"];
     if (!token || Array.isArray(token)) {
         return res.status(403).json({ error: "CSRF_TOKEN_MISSING" });
@@ -80,7 +96,7 @@ export function verifyCSRFToken(req: Request, res: Response, next: NextFunction)
         return res.status(403).json({ error: "CSRF_TOKEN_INVALID" });
     }
     next();
-};
+}
 
 export function generateCSRFToken(origin: string) {
     const ts = Date.now().toString();
