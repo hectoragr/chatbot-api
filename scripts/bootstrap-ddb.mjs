@@ -31,7 +31,8 @@ const Tables = {
   Tokens: process.env.DDB_TOKENS || "Tokens",
   Users: process.env.DDB_USERS || "Users", 
   Conversations: process.env.DDB_CONVERSATIONS || "Conversations",
-  TokenRequests: process.env.DDB_TOKEN_REQUESTS || "TokenRequests"
+  TokenRequests: process.env.DDB_TOKEN_REQUESTS || "TokenRequests",
+  RateLimits: process.env.DDB_RATELIMITS || "RateLimits"
 };
 
 async function ensureTable(params) {
@@ -46,7 +47,7 @@ async function ensureTable(params) {
 
 async function purgeAll() {
   const existing = await client.send(new ListTablesCommand({}));
-  for (const name of [Tables.Tokens, Tables.Users, Tables.Conversations, Tables.TokenRequests]) {
+  for (const name of [Tables.Tokens, Tables.Users, Tables.Conversations, Tables.TokenRequests, Tables.RateLimits]) {
     if (existing.TableNames?.includes(name)) {
       await client.send(new DeleteTableCommand({ TableName: name }));
       console.log(`🗑️ Deleted: ${name}`);
@@ -144,6 +145,27 @@ async function createTables() {
     console.log(`➕ Created: ${Tables.TokenRequests}`);
   } else {
     console.log(`✅ Table exists: ${Tables.TokenRequests}`);
+  }
+
+  // RateLimits table
+  if (!existing.TableNames?.includes(Tables.RateLimits)) {
+    await client.send(new CreateTableCommand({
+      TableName: Tables.RateLimits,
+      KeySchema: [
+        { AttributeName: "key", KeyType: "HASH" }
+      ],
+      AttributeDefinitions: [
+        { AttributeName: "key", AttributeType: "S" }
+      ],
+      TimeToLiveSpecification: {
+        AttributeName: "ttl",
+        Enabled: true
+      },
+      BillingMode: "PAY_PER_REQUEST"
+    }));
+    console.log(`➕ Created: ${Tables.RateLimits}`);
+  } else {
+    console.log(`✅ Table exists: ${Tables.RateLimits}`);
   }
 }
 
