@@ -23,7 +23,7 @@ export async function runCompletion(
 
   try {
     if (provider === "OPENAI" && process.env.OPENAI_API_KEY) {
-      const mdl = model || process.env.OPENAI_MODEL || "gpt-4o-mini";
+      const mdl = model || process.env.OPENAI_MODEL || "gpt-4.1-nano";
       let systemMessage: string | undefined;
       let temperature = 0.2;
       
