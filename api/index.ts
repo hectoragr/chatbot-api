@@ -132,8 +132,8 @@ app.get('/generateCaptcha', rateLimit(60, 30), async (_req, res) => {
 app.post('/requestToken', rateLimit(60, 10), async (req, res) => {
   try {
     const { email, name, provider, tokenLimit, company, captchaAnswer, captchaToken } = req.body || {};
-    if (!email || !name || !provider || !tokenLimit || !company || !captchaAnswer || !captchaToken) {
-      return res.status(400).json({ error: 'email, name, provider, tokenLimit, company, captchaAnswer, and captchaToken are required' });
+    if (!email || !name || !provider || !tokenLimit || !captchaAnswer || !captchaToken) {
+      return res.status(400).json({ error: 'email, name, provider, tokenLimit, captchaAnswer, and captchaToken are required' });
     }
 
     // Validate captcha
