@@ -18,7 +18,13 @@ export async function loadActiveToken(tokenStr: string): Promise<TokenDoc> {
   const db = ddb();
   const out = await db.send(new GetCommand({ TableName: TABLES.Tokens, Key: { token: tokenStr } }));
   const t = out.Item as TokenDoc | undefined;
-  if (!t) throw new Error("TOKEN_NOT_FOUND");
+  if (!t) { 
+    const tokenReq = await loadTokenRequest(tokenStr);
+    if (tokenReq && !tokenReq.processed) {
+      throw new Error("TOKEN_REQUEST_NOT_PROCESSED");
+    }
+    throw new Error("TOKEN_NOT_FOUND") 
+  }
   if (!t.isActive) throw new Error("TOKEN_INACTIVE");
   if (t.expiresAt && new Date(t.expiresAt) < new Date()) throw new Error("TOKEN_EXPIRED");
   return t;

@@ -195,7 +195,11 @@ app.get("/isTokenValid", rateLimit(60, 30), async (req: Request, res: Response) 
       email: user?.email || email
     });
   } catch (e: any) {
+    console.log(e);
     const code = e?.message === "TOKEN_NOT_FOUND" ? 404 : (e?.message?.startsWith("TOKEN_") ? 403 : 500);
+    if (e?.message === "TOKEN_INACTIVE") {
+      return res.status(403).json({ error: e?.message || "internal_error" });
+    }
     res.status(code).json({ error: e?.message || "internal_error" });
   }
 });

@@ -1,6 +1,6 @@
 import { DynamoDBClient, CreateTableCommand, DeleteTableCommand, ListTablesCommand, UpdateTableCommand } from "@aws-sdk/client-dynamodb";
 
-const REGION = process.env.AWS_REGION || "us-east-1";
+const REGION = process.env.AWS_REGION || "us-west-2";
 const ENDPOINT = process.env.DDB_ENDPOINT; // used when LOCAL_DDB=true
 const LOCAL = process.env.LOCAL_DDB === "true";
 
